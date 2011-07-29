@@ -125,12 +125,12 @@ class FileTypes(Extension):
         except Exception, e:
             raise ExtensionRunError(str(e))
 
-        query = """select a.file_id fid, f.file_name fname
-                from action_files a, files f
-                where f.id = a.file_id and
-                not exists 
-                (select id from file_links where parent_id = a.file_id)
-                and f.repository_id = ? group by fid, fname"""
+        query = """select f.id fid, f.file_name fname
+                from files f
+                where
+                not exists (select id from file_links where parent_id = f.id)
+                and f.repository_id = ?
+                group by fid, fname"""
 
         cursor.execute(statement(query, db.place_holder), (repo_id,))
         write_cursor = cnn.cursor()
