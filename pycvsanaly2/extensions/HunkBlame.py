@@ -173,6 +173,7 @@ class HunkBlame(Blame):
                                 "hunk_id integer REFERENCES hunks(id)," +
                                 "bug_commit_id integer REFERENCES scmlog(id)" +
                                 ") CHARACTER SET=utf8")
+                cursor.execute("CREATE INDEX bug_commit_id ON hunk_blames(bug_commit_id)")
             except MySQLdb.OperationalError, e:
                 if e.args[0] == 1050:
                     cursor.close()
