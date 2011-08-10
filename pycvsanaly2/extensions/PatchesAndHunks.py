@@ -63,8 +63,7 @@ class PatchesAndHunks(Extension):
 
         profiler_start("Running PatchesAndHunks extension")
 
-        hunks = Hunks()
-        hunks.get_patches = patch_generator
+        hunks = Hunks(patch_generator)
         hunks.run(repo, uri, db)
 
 register_extension("PatchesAndHunks", PatchesAndHunks)

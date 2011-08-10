@@ -20,6 +20,7 @@
 from pycvsanaly2.extensions import Extension, register_extension, \
         ExtensionRunError
 from pycvsanaly2.extensions.FilePaths import FilePaths
+import pycvsanaly2.extensions.Patches as Patches
 from pycvsanaly2.Database import SqliteDatabase, MysqlDatabase, statement, \
     ICursor, execute_statement
 from pycvsanaly2.utils import printdbg, printerr, printout, uri_to_filename
@@ -69,6 +70,9 @@ class CommitData(object):
 class Hunks(Extension):
     deps = ['Patches']
     INTERVAL_SIZE = 100
+    
+    def __init__(self, patch_source = Patches.get_patches):
+        self.get_patches = patch_source
 
     def __prepare_table(self, connection, drop_table=False):
         cursor = connection.cursor()
@@ -234,26 +238,6 @@ class Hunks(Extension):
                     hunks.append(cd)
         profiler_stop("get_commit_data")
         return hunks
-
-    def get_patches(self, repo, repo_uri, repo_id, db, cursor):
-        profiler_start("Hunks: fetch all patches")
-        icursor = ICursor(cursor, self.INTERVAL_SIZE)
-        # Get the patches from this repository
-        query = """select p.commit_id, p.patch, s.rev
-                    from patches p, scmlog s
-                    where p.commit_id = s.id and
-                    s.repository_id = ? and
-                    p.patch is not NULL"""
-        icursor.execute(statement(query, db.place_holder), (repo_id,))
-        profiler_stop("Hunks: fetch all patches", delete=True)
-
-        rs = icursor.fetchmany()
-
-        while rs:
-            for commit_id, patch_content, rev in rs:
-                yield (commit_id, patch_content, rev)
-            
-            rs = icursor.fetchmany()
 
     def run(self, repo, uri, db):
         # Start the profiler, per every other extension

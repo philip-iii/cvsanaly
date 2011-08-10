@@ -253,7 +253,7 @@ class Patches(Extension):
         write_cursor.close()
         cursor.close()
         cnn.close()
-        profiler_stop("Running Patches extension", delete=True)
+        profiler_stop("Running Patches extension", delete=True)          
 
     def backout(self, repo, uri, db):
         update_statement = """delete from patches
@@ -261,5 +261,25 @@ class Patches(Extension):
                                           where s.repository_id = ?)"""
 
         self._do_backout(repo, uri, db, update_statement)
+
+def get_patches(repo, repo_uri, repo_id, db, cursor):
+    profiler_start("Patches: fetch all patches")
+    icursor = ICursor(cursor)
+    # Get the patches from this repository
+    query = """select p.commit_id, p.patch, s.rev
+                from patches p, scmlog s
+                where p.commit_id = s.id and
+                s.repository_id = ? and
+                p.patch is not NULL"""
+    icursor.execute(statement(query, db.place_holder), (repo_id,))
+    profiler_stop("Patches: fetch all patches", delete=True)
+
+    rs = icursor.fetchmany()
+
+    while rs:
+        for commit_id, patch_content, rev in rs:
+            yield (commit_id, patch_content, rev)
+        
+        rs = icursor.fetchmany()
 
 register_extension("Patches", Patches)

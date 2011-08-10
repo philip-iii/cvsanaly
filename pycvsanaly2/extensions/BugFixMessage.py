@@ -18,9 +18,9 @@
 #       Chris Lewis <cflewis@soe.ucsc.edu>
 
 from pycvsanaly2.extensions import Extension, register_extension, \
-        ExtensionRunError, ExtensionBackoutError
+        ExtensionRunError
 from pycvsanaly2.Database import SqliteDatabase, MysqlDatabase, \
-        TableAlreadyExists, statement, execute_statement, get_repo_id
+        statement, execute_statement, get_repo_id
 from pycvsanaly2.utils import printdbg, printerr, printout, \
         remove_directory, uri_to_filename, get_repo_uri
 from pycvsanaly2.profile import profiler_start, profiler_stop
