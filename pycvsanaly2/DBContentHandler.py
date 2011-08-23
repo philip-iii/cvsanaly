@@ -21,7 +21,7 @@ import os
 import re
 
 from ContentHandler import ContentHandler
-from Database import (DBRepository, DBLog, DBFile, DBFileLink, DBFilePath,
+from Database import (DBRepository, DBLog, DBFile, DBFileLink,
                       DBAction, DBFileCopy, DBBranch, DBPerson, DBTag,
                       DBTagRev, statement)
 from profile import profiler_start, profiler_stop
@@ -161,7 +161,7 @@ class DBContentHandler(ContentHandler):
         cursor = self.cursor
 
         if self.actions:
-            actions = [(a.id, a.type, a.file_id, a.commit_id, a.branch_id) \
+            actions = [(a.id, a.type, a.file_id, a.commit_id, a.branch_id, a.current_file_path) \
                        for a in self.actions]
             profiler_start("Inserting actions for repository %d",
                            (self.repo_id,))
@@ -214,22 +214,6 @@ class DBContentHandler(ContentHandler):
                               dbfilecopy.from_commit,
                               dbfilecopy.new_file_name,
                               dbfilecopy.action_id))
-
-    def __add_file_path(self, commit_id, file_id, path):
-        """Add the latest full path of a given file_id and commit_id
-           to the table file_paths."""
-        try:
-            file_path = path.split("://", 1)[1]
-        except IndexError:
-            file_path = path
-
-        db_file_path = DBFilePath(None, commit_id, file_id, file_path)
-        self.cursor.execute(statement(DBFilePath.__insert__,
-                                      self.db.place_holder),
-                            (db_file_path.id,
-                             db_file_path.commit_id,
-                             db_file_path.file_id,
-                             db_file_path.file_path))
 
     def __get_person(self, person):
         """Get the person_id given a person struct
@@ -419,10 +403,6 @@ class DBContentHandler(ContentHandler):
                 parent_id = parent
                 parent = node_id
 
-                # Also add to file_paths
-                self.__add_file_path(commit_id, node_id,
-                    re.sub('^\d+://', '', rpath))
-
                 self.file_cache[rpath] = (node_id, parent_id)
 
             assert node_id is not None
@@ -475,9 +455,6 @@ class DBContentHandler(ContentHandler):
 
         file_id = self.__add_new_file_and_link(file_name, parent_id, log.id)
         self.file_cache[path] = (file_id, parent_id)
-
-        # Save also file_path
-        self.__add_file_path(log.id, file_id, path)
 
         return file_id
 
@@ -538,9 +515,6 @@ class DBContentHandler(ContentHandler):
         dbfilecopy.new_file_name = new_file_name
         self.__add_new_copy(dbfilecopy)
 
-        # Save also file_path
-        self.__add_file_path(log.id, file_id, path)
-
         return file_id
 
     def __action_copy(self, path, prefix, log, action, dbaction):
@@ -585,9 +559,6 @@ class DBContentHandler(ContentHandler):
         dbfilecopy.action_id = dbaction.id
         dbfilecopy.from_commit = from_commit_id
         self.__add_new_copy(dbfilecopy)
-
-        # Save also file_path
-        self.__add_file_path(log.id, file_id, path)
 
         return file_id
 
@@ -648,9 +619,6 @@ class DBContentHandler(ContentHandler):
         dbfilecopy.from_commit = from_commit_id
         self.__add_new_copy(dbfilecopy)
 
-        # Save also file_path
-        self.__add_file_path(log.id, file_id, path)
-
         return file_id
 
     def commit(self, commit):
@@ -687,11 +655,15 @@ class DBContentHandler(ContentHandler):
 
             prefix = "%d://" % (branch_id)
             path = prefix + action.f1
+            try:
+                dbaction.current_file_path = path.split("://", 1)[1]
+            except IndexError:
+                dbaction.current_file_path = path
 
             if action.type == 'A':
                 # A file has been added
                 file_id = self.__action_add(path, prefix, log)
-            elif action.type == 'M':
+            elif action.type == 'M' or action.type == 'T':
                 # A file has been modified
                 file_id = self.__get_file_for_path(path, log.id)[0]
             elif action.type == 'D':

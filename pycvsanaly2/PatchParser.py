@@ -14,7 +14,13 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+
+# Although this file was originally taken from Bazaar project, we have
+# made our customization thereafter. It should not be upgraded to any
+# newer version from Bazaar without careful inspection.
+
 import re
+from pycvsanaly2.utils import printerr
 
 
 binary_files_re = 'Binary files (.*) and (.*) differ\n'
@@ -133,7 +139,7 @@ def hunk_from_header(line):
 
 class HunkLine(object):
     def __init__(self, contents):
-        self.contents = contents
+        self.contents = str(contents.encode('utf-8'))
 
     def get_str(self, leadchar):
         if self.contents == "\n" and leadchar == " " and False:
@@ -143,7 +149,6 @@ class HunkLine(object):
         else:
             terminator = ''
         return leadchar + self.contents + terminator
-
 
 class ContextLine(HunkLine):
     def __init__(self, contents):
@@ -197,7 +202,7 @@ class Hunk(object):
         if self.tail is None:
             tail_str = ''
         else:
-            tail_str = ' ' + self.tail
+            tail_str = ' ' + str(self.tail.encode('utf-8'))
         return "@@ -%s +%s @@%s\n" % (self.range_str(self.orig_pos,
                                                      self.orig_range),
                                       self.range_str(self.mod_pos,
@@ -219,10 +224,10 @@ class Hunk(object):
             return "%i,%i" % (pos, range)
 
     def __str__(self):
-        lines = [self.get_header()]
+        ret = str(self.get_header())
         for line in self.lines:
-            lines.append(str(line))
-        return "".join(lines)
+            ret += str(line)
+        return ret
 
     def shift_to_mod(self, pos):
         if pos < self.orig_pos - 1:
@@ -286,7 +291,7 @@ def iter_hunks(iter_lines, allow_dirty=False):
                 if isinstance(hunk_line, (InsertLine, ContextLine)):
                     mod_size += 1
             except StopIteration:
-              break
+                break
     if hunk is not None:
         yield hunk
 
@@ -299,6 +304,12 @@ class BinaryPatch(object):
     def __str__(self):
         return 'Binary files %s and %s differ\n' % (self.oldname, self.newname)
 
+    def file_name(self):
+        file_name = self.newname.strip()
+        if file_name == "/dev/null":
+            file_name = self.oldname.strip()
+        file_name = re.sub(r'^[ab]\/', '', file_name)
+        return file_name
 
 class Patch(BinaryPatch):
 
@@ -307,10 +318,11 @@ class Patch(BinaryPatch):
         self.hunks = []
 
     def __str__(self):
-        ret = self.get_header()
-        ret += "".join([str(h) for h in self.hunks])
+        ret = str(self.get_header())
+        for h in self.hunks:
+            ret += str(h)
         return ret
-
+    
     def get_header(self):
         return "--- %s\n+++ %s\n" % (self.oldname, self.newname)
 
@@ -410,7 +422,13 @@ def iter_file_patch(iter_lines, allow_dirty=False):
                 yield saved_lines
             saved_lines = []
         elif line.startswith('@@'):
-            hunk = hunk_from_header(line)
+            try:
+                hunk = hunk_from_header(line)
+            except MalformedHunkHeader, e:
+                if allow_dirty:
+                    printerr("Error: MalformedHunkHeader; Probably merge commit. Skipping.")
+                    continue
+                raise e
             orig_range = hunk.orig_range
         saved_lines.append(line)
     if len(saved_lines) > 0:

@@ -22,7 +22,8 @@ from pycvsanaly2.extensions import Extension, register_extension, \
 from pycvsanaly2.extensions.FilePaths import FilePaths
 from pycvsanaly2.Database import SqliteDatabase, MysqlDatabase, statement, \
     ICursor, execute_statement
-from pycvsanaly2.utils import printdbg, printerr, printout, uri_to_filename
+from pycvsanaly2.utils import printdbg, printerr, printout, uri_to_filename, \
+    to_utf8
 from pycvsanaly2.profile import profiler_start, profiler_stop
 from pycvsanaly2.PatchParser import parse_patches, RemoveLine, InsertLine, \
         ContextLine, Patch
@@ -37,7 +38,7 @@ class CommitData(object):
 
         if (old_start_line != old_end_line and \
                 (old_start_line is None or old_end_line is None)) or \
-            (new_start_line != old_end_line and \
+            (new_start_line != new_end_line and \
                 (new_start_line is None or new_end_line is None)):
             raise ValueError("If either start or end is None, both must be")
 
@@ -198,9 +199,9 @@ class Hunks(Extension):
                         if in_change:
                             in_change = False
                             printdbg("Patch new name: " + patch.newname)
-                            file_name = re.split('\s+', patch.newname)[0]
+                            file_name = patch.newname.strip()
                             if file_name == "/dev/null":
-                                file_name = re.split('\s+', patch.oldname)[0]
+                                file_name = patch.oldname.strip()
                             cd = CommitData(file_name)
 
                             if deleted:
@@ -221,7 +222,10 @@ class Hunks(Extension):
 
                 # The diff ended without a new context line
                 if in_change:
-                    cd = CommitData(re.split('\s+', patch.newname)[0])
+                    file_name = patch.newname.strip()
+                    if file_name == "/dev/null":
+                        file_name = patch.oldname.strip()
+                    cd = CommitData(file_name)
 
                     if deleted:
                         cd.old_start_line = old_start_line
@@ -239,7 +243,7 @@ class Hunks(Extension):
         profiler_start("Hunks: fetch all patches")
         icursor = ICursor(cursor, self.INTERVAL_SIZE)
         # Get the patches from this repository
-        query = """select p.commit_id, p.patch, s.rev
+        query = """select p.commit_id, p.file_id, p.patch, s.rev
                     from patches p, scmlog s
                     where p.commit_id = s.id and
                     s.repository_id = ? and
@@ -250,10 +254,10 @@ class Hunks(Extension):
         rs = icursor.fetchmany()
 
         while rs:
-          for commit_id, patch_content, rev in rs:
-            yield (commit_id, patch_content, rev)
-
-          rs = icursor.fetchmany()
+            for commit_id, file_id, patch_content, rev in rs:
+                yield (commit_id, file_id, to_utf8(patch_content), rev)
+            
+            rs = icursor.fetchmany()
 
     def run(self, repo, uri, db):
         # Start the profiler, per every other extension
@@ -292,25 +296,8 @@ class Hunks(Extension):
         patches = self.get_patches(repo, path or repo.get_uri(), repo_id, db,
                                    read_cursor)
 
-        for commit_id, patch_content, rev in patches:
+        for commit_id, file_id, patch_content, rev in patches:
             for hunk in self.get_commit_data(patch_content):
-                # Get the file ID from the database for linking
-                hunk_file_name = re.sub(r'^[ab]\/', '',
-                                        hunk.file_name.strip())
-                file_id = fp.get_file_id(hunk_file_name, commit_id)
-
-                if file_id == None:
-                    printdbg("file not found")
-                    if repo.type == "git":
-                        # The liklihood is that this is a merge, not a
-                        # missing ID from some data screwup.
-                        # We'll just continue and throw this away
-                        continue
-                    else:
-                        printerr("No file ID found for hunk " + \
-                                 hunk_file_name + \
-                                 " at commit " + str(commit_id))
-
                 insert = """insert into hunks(file_id, commit_id,
                             old_start_line, old_end_line, new_start_line,
                             new_end_line)
