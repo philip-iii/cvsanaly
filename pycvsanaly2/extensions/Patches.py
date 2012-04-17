@@ -29,8 +29,8 @@ from pycvsanaly2.extensions import (Extension, register_extension,
 from pycvsanaly2.utils import to_utf8, printerr, printdbg, uri_to_filename
 from io import BytesIO
 from Jobs import JobPool, Job
+from pycvsanaly2.PatchParser import *
 from Progress import Progress
-from pycvsanaly2.PatchParser import *;
 from pycvsanaly2.extensions.FilePaths import FilePaths
 
 
@@ -53,7 +53,7 @@ class PatchJob(Job):
 
         while not done and not failed:
             try:
-                self.repo.show(self.repo_uri, self.rev)
+                self.repo.show(self.repo_uri, self.rev, ignore_whitespaces=True)
                 self.data = to_utf8(unicode(to_utf8(io.getvalue()), "utf-8", errors='replace')).strip()
                 done = True
             except (CommandError, CommandRunningError) as e:

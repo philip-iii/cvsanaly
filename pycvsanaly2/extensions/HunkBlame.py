@@ -19,8 +19,10 @@
 
 from Blame import BlameJob, Blame
 from pycvsanaly2.extensions import register_extension, ExtensionRunError
+from pycvsanaly2.extensions.line_types import get_line_types, line_is_code
 from pycvsanaly2.profile import profiler_start, profiler_stop
 from pycvsanaly2.utils import printdbg, printerr, uri_to_filename
+from pycvsanaly2.Config import Config
 from pycvsanaly2.Database import (SqliteDatabase, MysqlDatabase,
     TableAlreadyExists, statement)
 from repositoryhandler.backends import RepositoryCommandError
@@ -35,18 +37,24 @@ import sys
 
 class HunkBlameJob(Job):
     class BlameContentHandler(BlameJob.BlameContentHandler):
-        def __init__(self, hunks):
+        def __init__(self, hunks, line_types):
             self.hunks = hunks
+            if line_types:
+                self.line_types = line_types
+            else:
+                printdbg("Received empty set of line_types!")
+                self.line_types = []
             self.bug_revs = {}
 
         def line(self, blame_line):
-            for hunk_id, start_line, end_line in self.hunks:
-                if blame_line.line >= start_line and \
-                blame_line.line <= end_line:
-                    if self.bug_revs.get(hunk_id) is None:
-                        self.bug_revs[hunk_id] = set()
-                    self.bug_revs[hunk_id].add(blame_line.rev)
-                    break
+            if (not Config().hb_ignore_comments) or line_is_code(self.line_types, blame_line.line):
+                for hunk_id, start_line, end_line in self.hunks:
+                    if blame_line.line >= start_line and \
+                    blame_line.line <= end_line:
+                        if self.bug_revs.get(hunk_id) is None:
+                            self.bug_revs[hunk_id] = set()
+                        self.bug_revs[hunk_id].add(blame_line.rev)
+                        break
 
         def start_file(self, filename):
             self.filename = filename
@@ -62,6 +70,7 @@ class HunkBlameJob(Job):
         self.prev_path = None
         self.prev_rev = None
         self.bug_revs = {}
+        self.line_types = None
 
         self.hunks = hunks
         self.current_path = current_path
@@ -69,6 +78,13 @@ class HunkBlameJob(Job):
 
     def __do_the_blame(self, repo, repo_uri):
         printdbg("Running HunkBlameJob for %s@%s", (self.prev_path, self.prev_rev))
+
+        if Config().hb_ignore_comments:
+            self.line_types = get_line_types(repo, repo_uri, self.prev_rev, self.prev_path)
+            if self.line_types is None:
+                printdbg("""No lexer (output) for %s@%s""" % (self.prev_path, self.prev_rev))
+        else:
+            self.line_types = []
 
         def blame_line(line, p):
             p.feed(line)
@@ -110,49 +126,34 @@ class HunkBlameJob(Job):
         wid = repo.add_watch(BLAME, blame_line, p)
         try:
             repo.blame(os.path.join(repo_uri, self.prev_path), self.prev_rev,
-                       start=start, end=end)
+                       start=start, end=end, ignore_whitespaces=True)
             self.collect_results(out)
         except RepositoryCommandError, e:
+            printerr("Command %s returned %d (%s).", (e.cmd, e.returncode, e.error))
             self.failed = True
         p.end()
         repo.remove_watch(BLAME, wid)
 
-        return not self.failed
-
     def run(self, repo, repo_uri):
         try:
-            used_follow = False
             try:
-                prev_tuple = repo.get_previous_commit_and_file_name(repo_uri, self.current_rev, self.current_path, False)
+                prev_tuple = repo.get_previous_commit_and_file_name(repo_uri, self.current_rev, self.current_path)
             except NotImplementedError:
                 raise ExtensionRunError("HunkBlame extension is not supported " + \
                                         "for %s repositories" % (repo.get_type()))
 
             if prev_tuple is None or prev_tuple == "":
-                # try again with follow on.
-                used_follow = True
-                prev_tuple = repo.get_previous_commit_and_file_name(repo_uri, self.current_rev, self.current_path, True)
-                if prev_tuple is None or prev_tuple == "":
-                    raise NotValidHunkWarning(
-                        """Couldn't find previous path for file %s@%s""" % (self.current_path, self.current_rev))
+                raise NotValidHunkWarning(
+                    """Couldn't find previous path for file %s@%s""" % (self.current_path, self.current_rev))
 
             (self.prev_rev, self.prev_path) = prev_tuple
 
-            if not self.__do_the_blame(repo, repo_uri) and not used_follow:
-                # try again with follow on
-                used_follow = True
-                prev_tuple = repo.get_previous_commit_and_file_name(repo_uri, self.current_rev, self.current_path, True)
-                if prev_tuple is None or prev_tuple == "":
-                    raise NotValidHunkWarning(
-                        """Couldn't find previous path for file %s@%s""" % (self.current_path, self.current_rev))
-                (self.prev_rev, self.prev_path) = prev_tuple
-                self.__do_the_blame(repo, repo_uri)
-
+            self.__do_the_blame(repo, repo_uri)
         except NotValidHunkWarning as e:
             printerr("Not a valid hunk: " + str(e))
 
     def get_content_handler(self):
-        return self.BlameContentHandler(self.hunks)
+        return self.BlameContentHandler(self.hunks, self.line_types)
 
     def collect_results(self, content_handler):
         self.bug_revs = content_handler.bug_revs
@@ -189,7 +190,8 @@ class HunkBlame(Blame):
                 cursor.execute("CREATE TABLE hunk_blames (" +
                                 "id integer primary key," +
                                 "hunk_id integer," +
-                                "bug_commit_id integer"
+                                "bug_commit_id integer," +
+                                "KEY hunk_id (hunk_id)"
                                 ")")
             except sqlite3.dbapi2.OperationalError:
                 raise TableAlreadyExists
@@ -203,7 +205,8 @@ class HunkBlame(Blame):
                 cursor.execute("CREATE TABLE hunk_blames (" +
                                 "id integer primary key auto_increment," +
                                 "hunk_id integer REFERENCES hunks(id)," +
-                                "bug_commit_id integer REFERENCES scmlog(id)" +
+                                "bug_commit_id integer REFERENCES scmlog(id)," +
+                                "KEY hunk_id (hunk_id)" +
                                 ") CHARACTER SET=utf8")
             except MySQLdb.OperationalError, e:
                 if e.args[0] == 1050:
@@ -237,7 +240,27 @@ class HunkBlame(Blame):
                     raise
             finally:
                 cursor.close()
-        
+                
+        cursor = cnn.cursor()
+        query = "CREATE INDEX hunk_id ON hunk_blames(hunk_id);"
+        if isinstance(self.db, SqliteDatabase):
+            import sqlite3.dbapi2
+            try:
+                cursor.execute(query)
+            except sqlite3.dbapi2.OperationalError:
+                pass
+            finally:
+                cursor.close()
+                
+        elif isinstance(self.db, MysqlDatabase):
+            import MySQLdb
+            try:
+                cursor.execute(query)
+            except MySQLdb.OperationalError, e:
+                if e.args[0] != 1061:
+                    raise
+            finally:
+                cursor.close()
 
     def __drop_cache(self, cnn):
         cursor = cnn.cursor()
@@ -294,15 +317,6 @@ class HunkBlame(Blame):
                 cursor.close()
 
         cnn.commit()
-
-    def __get_hunk_blames(self, cursor, repoid):
-        query = """select distinct b.hunk_id
-            from hunk_blames b
-            join hunks h on b.hunk_id=h.id
-            join files f on h.file_id=f.id
-            where f.repository_id=?"""
-        cursor.execute(statement(query, self.db.place_holder), (repoid,))
-        return [h[0] for h in cursor.fetchall()]
 
     def populate_insert_args(self, job):
         bug_revs = job.get_bug_revs()
@@ -368,8 +382,6 @@ class HunkBlame(Blame):
         
         self.__add_index(cnn)
 
-        blames = self.__get_hunk_blames(read_cursor, repoid)
-
         job_pool = JobPool(repo, path or repo.get_uri(), queuesize=100)
 
         outer_query = """select distinct h.file_id, h.commit_id
@@ -379,6 +391,7 @@ class HunkBlame(Blame):
                 and h.old_end_line is not null
                 and h.file_id is not null
                 and h.commit_id is not null
+                and h.id NOT IN (SELECT DISTINCT hunk_id FROM hunk_blames)
         """
         read_cursor.execute(statement(outer_query, db.place_holder), (repoid,))
         progress = Progress("[Extension HunkBlame]", read_cursor.rowcount)
@@ -416,6 +429,7 @@ class HunkBlame(Blame):
                             and h.old_end_line is not null
                             and h.file_id is not null
                             and h.commit_id is not null
+                            and h.id NOT IN (SELECT DISTINCT hunk_id FROM hunk_blames)
                     """
                     inner_cursor.execute(statement(inner_query,
                                                    db.place_holder),
@@ -427,7 +441,6 @@ class HunkBlame(Blame):
                         % (file_id, commit_id))
                 finally:
                     inner_cursor.close()
-                hunks = [h for h in hunks if h[0] not in blames]
 
                 # create the Job and run it
                 job = HunkBlameJob(hunks, current_path, current_rev)
